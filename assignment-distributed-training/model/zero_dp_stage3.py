@@ -1,4 +1,5 @@
 import numpy as np
+from mpi4py import MPI
 
 import sys
 sys.path.append("..")
@@ -106,15 +107,16 @@ class ZeroDPStage3FCLayer(object):
                 the number of elements in each shard **including padding**.
         """
 
-        """TODO: Your code here"""
-
-        # Hint: You need to handle the case when tensor.numel() is not divisible by 
-        # num_shards by padding zeros at the end of the flattened tensor before 
-        # partitioning. The returned shard should INCLUDE the padded elements.
-        # We keep track of the original shard_size (without padding) for
-        # later use in communication.
-
-        return (np.empty(8), 8)
+        flat_tensor = tensor.flatten()
+        numel = flat_tensor.size
+        shard_size = (numel + num_shards - 1) // num_shards
+        pad_size = shard_size * num_shards - numel
+        if pad_size > 0:
+            flat_tensor = np.pad(flat_tensor, (0, pad_size), mode='constant')
+        start_idx = shard_idx * shard_size
+        end_idx = start_idx + shard_size
+        tensor_shard = flat_tensor[start_idx:end_idx].copy()
+        return tensor_shard, shard_size
 
     def zero_grad(self):
         self.grad_w_shard = np.zeros_like(self.w_shard)
@@ -141,10 +143,16 @@ class ZeroDPStage3FCLayer(object):
         """
         self.x = x
 
-        """TODO: Your code here"""
-
-
-        raise NotImplementedError
+        full_w_flat = np.empty(self.dp_size * self.w_shard_size, dtype=self.w_shard.dtype)
+        self.comm.Allgather(self.w_shard, full_w_flat)
+        full_w = full_w_flat[:self.w_numel].reshape((self.in_dim, self.out_dim))
+        
+        full_b_flat = np.empty(self.dp_size * self.b_shard_size, dtype=self.b_shard.dtype)
+        self.comm.Allgather(self.b_shard, full_b_flat)
+        full_b = full_b_flat[:self.b_numel].reshape((1, self.out_dim))
+        
+        out = x @ full_w + full_b
+        return out
 
     def backward(self, output_grad: np.ndarray) -> List[np.ndarray]:
         """Backward pass under ZeRO-DP Stage 3.
@@ -178,9 +186,28 @@ class ZeroDPStage3FCLayer(object):
             these attributes for the optimizer step.
         """
 
-        """TODO: Your code here"""
-
-        raise NotImplementedError
+        full_w_flat = np.empty(self.dp_size * self.w_shard_size, dtype=self.w_shard.dtype)
+        self.comm.Allgather(self.w_shard, full_w_flat)
+        full_w = full_w_flat[:self.w_numel].reshape((self.in_dim, self.out_dim))
+        
+        grad_w = self.x.T @ output_grad
+        grad_b = np.sum(output_grad, axis=0, keepdims=True)
+        grad_x = output_grad @ full_w.T
+        
+        grad_w_flat = grad_w.flatten()
+        pad_size_w = self.w_shard_size * self.dp_size - self.w_numel
+        if pad_size_w > 0:
+            grad_w_flat = np.pad(grad_w_flat, (0, pad_size_w), mode='constant')
+            
+        grad_b_flat = grad_b.flatten()
+        pad_size_b = self.b_shard_size * self.dp_size - self.b_numel
+        if pad_size_b > 0:
+            grad_b_flat = np.pad(grad_b_flat, (0, pad_size_b), mode='constant')
+            
+        self.comm.Reduce_scatter(grad_w_flat, self.grad_w_shard, op=MPI.SUM)
+        self.comm.Reduce_scatter(grad_b_flat, self.grad_b_shard, op=MPI.SUM)
+        
+        return [grad_x]
 
 
 class ZeroDPMLPModel(object):
@@ -314,6 +341,16 @@ class ZeroDPAdam(object):
                     "v": np.zeros_like(param),
                 }
 
-            """TODO: Your code here"""
-
-        raise NotImplementedError
+            m = self.state[key]["m"]
+            v = self.state[key]["v"]
+            
+            m = self.beta1 * m + (1 - self.beta1) * grad
+            v = self.beta2 * v + (1 - self.beta2) * np.square(grad)
+            
+            self.state[key]["m"] = m
+            self.state[key]["v"] = v
+            
+            m_hat = m / (1 - self.beta1 ** self.step_idx)
+            v_hat = v / (1 - self.beta2 ** self.step_idx)
+            
+            param -= self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
