@@ -47,11 +47,11 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
-def _pretokenize_chunk(args: tuple) -> dict[tuple[bytes, ...], int]:
+def _pretokenize_chunk(args: tuple) -> dict[bytes, int]:
     """Pre-tokenize a single chunk of the corpus. Runs in a worker process."""
     input_path, chunk_start, chunk_end, special_tokens_bytes, split_pattern = args
 
-    pre_token_counts: dict[tuple[bytes, ...], int] = defaultdict(int)
+    pre_token_counts: dict[bytes, int] = defaultdict(int)
     pretokenize_re = re.compile(GPT2_PAT)
 
     with open(input_path, "rb") as f:
@@ -73,9 +73,9 @@ def _pretokenize_chunk(args: tuple) -> dict[tuple[bytes, ...], int]:
             continue
         for match in pretokenize_re.finditer(segment):
             token_str = match.group()
-            token_bytes = tuple(bytes([b]) for b in token_str.encode("utf-8"))
-            if token_bytes:
-                pre_token_counts[token_bytes] += 1
+            encoded = token_str.encode("utf-8")
+            if encoded:
+                pre_token_counts[encoded] += 1
 
     return dict(pre_token_counts)
 
@@ -128,7 +128,7 @@ def train_bpe(
         work.append((str(input_path), start, end, special_tokens_bytes, split_pattern))
 
     # Parallel pre-tokenization and merge
-    pre_token_counts: dict[tuple[bytes, ...], int] = defaultdict(int)
+    pre_token_counts: dict[bytes, int] = defaultdict(int)
 
     if len(work) > 1:
         with Pool(processes=min(num_processes, len(work))) as pool:

@@ -27,18 +27,16 @@ fn train_bpe_rs<'py>(
 
     let num_merges = vocab_size - next_id;
 
-    // Parse pre_token_counts: list of (tuple_of_bytes, int)
+    // Parse pre_token_counts: list of (bytes, int)
+    // bytes is the raw token bytes, we split into individual bytes for BPE
     let mut pre_token_counts: HashMap<Token, u32> = HashMap::new();
     for item in pre_token_counts_py.iter() {
         let tuple = item.downcast::<PyTuple>()?;
-        let token_tuple = tuple.get_item(0)?.downcast::<PyTuple>()?.clone();
+        let py_bytes = tuple.get_item(0)?.downcast::<PyBytes>()?.clone();
+        let token_bytes: &[u8] = py_bytes.as_bytes();
         let freq: u32 = tuple.get_item(1)?.extract()?;
 
-        let mut token: Token = Vec::with_capacity(token_tuple.len());
-        for byte_item in token_tuple.iter() {
-            let b: &[u8] = byte_item.downcast::<PyBytes>()?.as_bytes();
-            token.push(b.into());
-        }
+        let token: Token = token_bytes.iter().map(|&b| Box::new([b]) as Box<[u8]>).collect();
         *pre_token_counts.entry(token).or_insert(0) += freq;
     }
 
