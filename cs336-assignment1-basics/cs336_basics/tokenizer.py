@@ -25,13 +25,6 @@ class Tokenizer:
             pair: i for i, pair in enumerate(merges)
         }
 
-        # Special token bytes, sorted by length descending for longest-match-first
-        self.special_token_bytes: list[bytes] = sorted(
-            [st.encode("utf-8") for st in self.special_tokens],
-            key=len,
-            reverse=True,
-        )
-
         # Build regex for splitting by special tokens (longest match first)
         if self.special_tokens:
             escaped = [re.escape(st) for st in self.special_tokens]
