@@ -203,3 +203,89 @@ class CausalMultiHeadSelfAttention(nn.Module):
         out = rearrange(attn_out, "... h seq d_v -> ... seq (h d_v)")
 
         return self.output_proj(out)
+
+
+class TransformerBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        d_ff: int,
+        rope_theta: float | None = None,
+        rope_max_seq_len: int | None = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.attn = CausalMultiHeadSelfAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            rope_theta=rope_theta,
+            rope_max_seq_len=rope_max_seq_len,
+            device=device,
+            dtype=dtype,
+        )
+        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
+        self.ffn = SwiGLU(
+            d_model=d_model,
+            d_ff=d_ff,
+            device=device,
+            dtype=dtype,
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        token_positions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), token_positions=token_positions)
+        x = x + self.ffn(self.ln2(x))
+        return x
+
+
+class TransformerLM(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        d_model: int,
+        num_layers: int,
+        num_heads: int,
+        d_ff: int,
+        rope_theta: float | None = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.token_embeddings = Embedding(vocab_size, d_model, device=device, dtype=dtype)
+        self.layers = nn.ModuleList(
+            [
+                TransformerBlock(
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    d_ff=d_ff,
+                    rope_theta=rope_theta,
+                    rope_max_seq_len=context_length,
+                    device=device,
+                    dtype=dtype,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        self.lm_head = Linear(d_model, vocab_size, device=device, dtype=dtype)
+
+    def forward(self, in_indices: torch.Tensor) -> torch.Tensor:
+        seq_len = in_indices.shape[-1]
+        token_positions = torch.arange(seq_len, device=in_indices.device)
+        token_positions = token_positions.expand(*in_indices.shape)
+
+        x = self.token_embeddings(in_indices)
+        for layer in self.layers:
+            x = layer(x, token_positions=token_positions)
+        x = self.ln_final(x)
+        logits = self.lm_head(x)
+        return logits
+
+
