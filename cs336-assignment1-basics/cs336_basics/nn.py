@@ -6,6 +6,7 @@ import torch
 from einops import einsum, rearrange
 from torch import nn
 
+from cs336_basics.attention import scaled_dot_product_attention
 
 class Linear(nn.Module):
     def __init__(
@@ -131,3 +132,76 @@ class RotaryPositionalEmbedding(nn.Module):
 
         return rearrange(rotated, "... seq pair two -> ... seq (pair two)")
 
+
+class CausalMultiHeadSelfAttention(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        rope_theta: float | None = None,
+        rope_max_seq_len: int | None = None,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads
+
+        self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.output_proj = Linear(d_model, d_model, device=device, dtype=dtype)
+
+        if rope_theta is not None and rope_max_seq_len is not None:
+            self.rope = RotaryPositionalEmbedding(
+                theta=rope_theta,
+                d_k=self.d_k,
+                max_seq_len=rope_max_seq_len,
+                device=device,
+            )
+        else:
+            self.rope = None
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        token_positions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        Q = rearrange(q, "... seq (h d_k) -> ... h seq d_k", h=self.num_heads)
+        K = rearrange(k, "... seq (h d_k) -> ... h seq d_k", h=self.num_heads)
+        V = rearrange(v, "... seq (h d_v) -> ... h seq d_v", h=self.num_heads)
+
+        if self.rope is not None:
+            if token_positions is None:
+                seq_len = x.shape[-2]
+                token_positions = torch.arange(seq_len, device=x.device).expand(*x.shape[:-1])
+
+            token_positions_expanded = token_positions.unsqueeze(-2).expand(*Q.shape[:-1])
+
+            Q_shape = Q.shape
+            K_shape = K.shape
+
+            Q_flat = Q.reshape(-1, Q_shape[-2], Q_shape[-1])
+            K_flat = K.reshape(-1, K_shape[-2], K_shape[-1])
+            token_positions_flat = token_positions_expanded.reshape(-1, Q_shape[-2])
+
+            Q_rope = self.rope(Q_flat, token_positions_flat)
+            K_rope = self.rope(K_flat, token_positions_flat)
+
+            Q = Q_rope.view(*Q_shape)
+            K = K_rope.view(*K_shape)
+
+        seq_len = Q.shape[-2]
+        mask = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device))
+
+        attn_out = scaled_dot_product_attention(Q, K, V, mask=mask)
+
+        out = rearrange(attn_out, "... h seq d_v -> ... seq (h d_v)")
+
+        return self.output_proj(out)
