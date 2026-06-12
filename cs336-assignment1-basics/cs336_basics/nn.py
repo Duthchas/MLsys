@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 import torch
-from einops import einsum, rearrange
+from einops import einsum, rearrange, pack, unpack, repeat
 from torch import nn
 
 from cs336_basics.attention import scaled_dot_product_attention
@@ -180,22 +180,20 @@ class CausalMultiHeadSelfAttention(nn.Module):
         if self.rope is not None:
             if token_positions is None:
                 seq_len = x.shape[-2]
-                token_positions = torch.arange(seq_len, device=x.device).expand(*x.shape[:-1])
+                token_positions = torch.arange(seq_len, device=x.device)
+                
+            token_positions = token_positions.expand(*x.shape[:-1])
+            token_positions_expanded = repeat(token_positions, "... seq -> ... h seq", h=self.num_heads)
 
-            token_positions_expanded = token_positions.unsqueeze(-2).expand(*Q.shape[:-1])
-
-            Q_shape = Q.shape
-            K_shape = K.shape
-
-            Q_flat = Q.reshape(-1, Q_shape[-2], Q_shape[-1])
-            K_flat = K.reshape(-1, K_shape[-2], K_shape[-1])
-            token_positions_flat = token_positions_expanded.reshape(-1, Q_shape[-2])
+            Q_flat, ps = pack([Q], "* seq d_k")
+            K_flat, _ = pack([K], "* seq d_k")
+            token_positions_flat, _ = pack([token_positions_expanded], "* seq")
 
             Q_rope = self.rope(Q_flat, token_positions_flat)
             K_rope = self.rope(K_flat, token_positions_flat)
 
-            Q = Q_rope.view(*Q_shape)
-            K = K_rope.view(*K_shape)
+            [Q] = unpack(Q_rope, ps, "* seq d_k")
+            [K] = unpack(K_rope, ps, "* seq d_k")
 
         seq_len = Q.shape[-2]
         mask = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device))
