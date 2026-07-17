@@ -8,6 +8,12 @@ from torch import nn
 
 from cs336_basics.attention import scaled_dot_product_attention
 
+
+def silu(x: torch.Tensor) -> torch.Tensor:
+    """Apply the SiLU (Swish) activation elementwise."""
+    return x * torch.sigmoid(x)
+
+
 class Linear(nn.Module):
     def __init__(
         self,
@@ -287,5 +293,4 @@ class TransformerLM(nn.Module):
         x = self.ln_final(x)
         logits = self.lm_head(x)
         return logits
-
 
